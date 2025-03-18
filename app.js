@@ -1,49 +1,133 @@
 import express from 'express';
+import { Sequelize, DataTypes } from 'sequelize';
+import { body, validationResult } from 'express-validator';
 
 const app = express();
 const port = 3000;
 
-// Entity 1: Shop (Parent Class)
-class Shop {
-    constructor(shop_id, name, location) {
-        this.shop_id = shop_id;
-        this.name = name;
-        this.location = location;
+// Database Configuration (SQLite for simplicity)
+const sequelize = new Sequelize({
+    dialect: 'sqlite',
+    storage: 'database.sqlite',
+    logging: false // Disable logging for cleaner console output
+});
+
+
+// Shop Model Definition
+const Shop = sequelize.define('Shop', {
+    shop_id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notEmpty: {
+                msg: 'Shop name cannot be empty'
+            }
+        }
+    },
+    location: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notEmpty: {
+                msg: 'Shop location cannot be empty'
+            }
+        }
     }
+}, {
+    tableName: 'shops',
+    timestamps: true // Enable timestamps (createdAt, updatedAt)
+});
 
-    describe() {
-        return `Shop: ${this.name} located at ${this.location}`;
+// Product Model Definition
+const Product = sequelize.define('Product', {
+    product_id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    shop_id: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        references: { // Foreign key
+            model: Shop,
+            key: 'shop_id'
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'CASCADE'
+    },
+    name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notEmpty: {
+                msg: 'Product name cannot be empty'
+            }
+        }
+    },
+    description: {
+        type: DataTypes.TEXT
+    },
+    price: {
+        type: DataTypes.FLOAT,
+        allowNull: false,
+        validate: {
+            isFloat: {
+                msg: 'Price must be a valid number'
+            },
+            min: {
+                args: [0],
+                msg: 'Price must be a non-negative number'
+            }
+        }
+    },
+    category: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notEmpty: {
+                msg: 'Category cannot be empty'
+            }
+        }
     }
-}
+}, {
+    tableName: 'products',
+    timestamps: true
+});
 
-// Entity 2: Product (Child Class inheriting from Shop)
-class Product extends Shop {
-    constructor(product_id, shop_id, name, description, price, category) {
-        super(shop_id, null, null); 
-        this.product_id = product_id;
-        this.shop_id = shop_id; 
-        this.name = name;
-        this.description = description;
-        this.price = price;
-        this.category = category;
+// Establish relationships (important for foreign keys and associations)
+Shop.hasMany(Product, { foreignKey: 'shop_id', as: 'products' }); // Shop has many Products
+Product.belongsTo(Shop, { foreignKey: 'shop_id', as: 'shop' });  // Product belongs to a Shop
+
+
+
+(async () => {
+    try {
+        await sequelize.sync({ force: false });  // Use { force: true } to drop and recreate tables
+        console.log('Database synchronized');
+
+        // Seed data
+        if (await Shop.count() === 0) {
+            const techStore = await Shop.create({ name: 'TechStore', location: '123 Main Street' });
+            const bookHaven = await Shop.create({ name: 'BookHaven', location: '456 Oak Avenue' });
+
+            await Product.bulkCreate([
+                { shop_id: techStore.shop_id, name: 'Laptop', description: 'High-performance laptop', price: 1200, category: 'Electronics' },
+                { shop_id: techStore.shop_id, name: 'Smartphone', description: 'Latest smartphone model', price: 800, category: 'Electronics' },
+                { shop_id: bookHaven.shop_id, name: 'The Lord of the Rings', description: 'Fantasy novel by J.R.R. Tolkien', price: 25, category: 'Books' }
+            ]);
+            console.log('Database seeded with initial data');
+        }
+
+    } catch (error) {
+        console.error('Unable to synchronize the database:', error);
     }
+})();
 
-    displayProduct() {
-        return `Product: ${this.name}, Price: $${this.price}, Category: ${this.category}`;
-    }
-}
-
-// Storage
-let shops = [
-    new Shop("SHOP001", "TechStore", "123 Main Street"),
-    new Shop("SHOP002", "BookHaven", "456 Oak Avenue")
-];
-
-let products = [
-    new Product("PROD001", "SHOP001", "Laptop", "High-performance laptop", 1200, "Electronics"),
-    new Product("PROD002", "SHOP001", "Smartphone", "Latest smartphone model", 800, "Electronics"),
-    new Product("PROD003", "SHOP002", "The Lord of the Rings", "Fantasy novel by J.R.R. Tolkien", 25, "Books")
-];
 
 // Middleware
 app.use(express.json());
@@ -52,116 +136,236 @@ app.use((req, res, next) => {
     next();
 });
 
-// Routes for Shops
+
+// --- Routes for Shops ---
 // GET /shops - Get all shops
-app.get('/shops', (req, res) => {
-    res.json(shops);
+app.get('/shops', async (req, res) => {
+    try {
+        const shops = await Shop.findAll();
+        res.json(shops);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
 });
 
 // GET /shops/:shop_id - Get a shop by ID
-app.get('/shops/:shop_id', (req, res) => {
+app.get('/shops/:shop_id', async (req, res) => {
     const shop_id = req.params.shop_id;
-    const shop = shops.find(shop => shop.shop_id === shop_id);
 
-    if (shop) {
-        res.json(shop);
-    } else {
-        res.status(404).json({ message: 'Shop not found' });
+    try {
+        const shop = await Shop.findByPk(shop_id, { include: [{ model: Product, as: 'products' }] }); // Include associated products
+        if (shop) {
+            res.json(shop);
+        } else {
+            res.status(404).json({ message: 'Shop not found' });
+        }
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
     }
 });
 
 // POST /shops - Create a new shop
-app.post('/shops', (req, res) => {
-    const {name, location} = req.body;
+app.post(
+    '/shops',
+    [
+        body('name').notEmpty().withMessage('Shop name is required'),
+        body('location').notEmpty().withMessage('Shop location is required')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
 
-    if (!name || !location) {
-        return res.status(400).json({message: 'Missing required fields (name, location)'});
+        const { name, location } = req.body;
+
+        try {
+            const newShop = await Shop.create({ name, location });
+            res.status(201).json(newShop);
+        } catch (error) {
+            console.error(error);
+             if (error.name === 'SequelizeValidationError') {
+                const sequelizeErrors = error.errors.map(err => ({
+                    param: err.path,
+                    msg: err.message
+                }));
+                return res.status(400).json({ errors: sequelizeErrors });
+            }
+            res.status(500).json({ message: 'Server error' });
+        }
     }
-
-    const new_shop_id = String(Date.now());
-    const newShop = new Shop(new_shop_id, name, location);
-    shops.push(newShop);
-    res.status(201).json(newShop);
-});
+);
 
 // PUT /shops/:shop_id - Update a shop by ID
-app.put('/shops/:shop_id', (req, res) => {
+app.put(
+    '/shops/:shop_id',
+    [
+        body('name').optional().notEmpty().withMessage('Shop name cannot be empty'),
+        body('location').optional().notEmpty().withMessage('Shop location cannot be empty')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const shop_id = req.params.shop_id;
+        const { name, location } = req.body;
+
+        try {
+            const shop = await Shop.findByPk(shop_id);
+            if (!shop) {
+                return res.status(404).json({ message: 'Shop not found' });
+            }
+
+            await shop.update({ name, location });
+            res.json(shop);
+        } catch (error) {
+            console.error(error);
+              if (error.name === 'SequelizeValidationError') {
+                const sequelizeErrors = error.errors.map(err => ({
+                    param: err.path,
+                    msg: err.message
+                }));
+                return res.status(400).json({ errors: sequelizeErrors });
+            }
+            res.status(500).json({ message: 'Server error' });
+        }
+    }
+);
+
+// DELETE /shops/:shop_id - Delete a shop by ID
+app.delete('/shops/:shop_id', async (req, res) => {
     const shop_id = req.params.shop_id;
-    const {name, location} = req.body;
 
-    const shopIndex = shops.findIndex(shop => shop.shop_id === shop_id);
+    try {
+        const shop = await Shop.findByPk(shop_id);
+        if (!shop) {
+            return res.status(404).json({ message: 'Shop not found' });
+        }
 
-    if (shopIndex !== -1) {
-        shops[shopIndex] = {...shops[shopIndex], name, location};
-        res.json(shops[shopIndex]);
-    } else {
-        res.status(404).json({message: 'Shop not found'});
+        await shop.destroy();
+        res.status(204).send();
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
     }
 });
 
-// DELETE /shops/:shop_id - Delete a shop by ID
-app.delete('/shops/:shop_id', (req, res) => {
-    const shop_id = req.params.shop_id;
-    shops = shops.filter(shop => shop.shop_id !== shop_id);
-
-    
-    products = products.filter(product => product.shop_id !== shop_id);
-
-    res.status(204).send();
-});
-
-// Routes for Products
+// --- Routes for Products ---
 // GET /products - Get all products
-app.get('/products', (req, res) => {
-    res.json(products);
+app.get('/products', async (req, res) => {
+    try {
+        const products = await Product.findAll();
+        res.json(products);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
 });
 
 // GET /products/:product_id - Get a product by ID
-app.get('/products/:product_id', (req, res) => {
+app.get('/products/:product_id', async (req, res) => {
     const product_id = req.params.product_id;
-    const product = products.find(product => product.product_id === product_id);
 
-    if (product) {
-        res.json(product);
-    } else {
-        res.status(404).json({message: 'Product not found'});
+    try {
+        const product = await Product.findByPk(product_id);
+        if (product) {
+            res.json(product);
+        } else {
+            res.status(404).json({ message: 'Product not found' });
+        }
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
     }
 });
 
 // POST /products - Create a new product
-app.post('/products', (req, res) => {
-    const {shop_id, name, description, price, category} = req.body;
+app.post(
+    '/products',
+    [
+        body('shop_id').notEmpty().withMessage('Shop ID is required'), // Assuming shop_id exists and is valid
+        body('name').notEmpty().withMessage('Product name is required'),
+        body('price').notEmpty().withMessage('Price is required').isFloat({ min: 0 }).withMessage('Price must be a non-negative number'),
+        body('category').notEmpty().withMessage('Category is required')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
 
-    if (!shop_id || !name || !price || !category) {
-        return res.status(400).json({message: 'Missing required fields (shop_id, name, price, category)'});
+        const { shop_id, name, description, price, category } = req.body;
+
+        try {
+            const newProduct = await Product.create({ shop_id, name, description, price, category });
+            res.status(201).json(newProduct);
+        } catch (error) {
+            console.error(error);
+            if (error.name === 'SequelizeValidationError') {
+                const sequelizeErrors = error.errors.map(err => ({
+                    param: err.path,
+                    msg: err.message
+                }));
+                return res.status(400).json({ errors: sequelizeErrors });
+            }
+            res.status(500).json({ message: 'Server error' });
+        }
     }
-
-    const new_product_id = String(Date.now());
-    const newProduct = new Product(new_product_id, shop_id, name, description, price, category);
-    products.push(newProduct);
-    res.status(201).json(newProduct);
-});
+);
 
 // PUT /products/:product_id - Update a product by ID
-app.put('/products/:product_id', (req, res) => {
-    const product_id = req.params.product_id;
-    const {shop_id, name, description, price, category} = req.body;
+app.put(
+    '/products/:product_id',
+    [
+        body('name').optional().notEmpty().withMessage('Product name cannot be empty'),
+        body('price').optional().isFloat({ min: 0 }).withMessage('Price must be a non-negative number'),
+    ],
+    async (req, res) => {
+        const product_id = req.params.product_id;
+        const { shop_id, name, description, price, category } = req.body;
 
-    const productIndex = products.findIndex(product => product.product_id === product_id);
+        try {
+            const product = await Product.findByPk(product_id);
+            if (!product) {
+                return res.status(404).json({ message: 'Product not found' });
+            }
 
-    if (productIndex !== -1) {
-        products[productIndex] = {...products[productIndex], shop_id, name, description, price, category};
-        res.json(products[productIndex]);
-    } else {
-        res.status(404).json({message: 'Product not found'});
+            await product.update({ shop_id, name, description, price, category });
+            res.json(product);
+        } catch (error) {
+            console.error(error);
+             if (error.name === 'SequelizeValidationError') {
+                const sequelizeErrors = error.errors.map(err => ({
+                    param: err.path,
+                    msg: err.message
+                }));
+                return res.status(400).json({ errors: sequelizeErrors });
+            }
+            res.status(500).json({ message: 'Server error' });
+        }
     }
-});
+);
 
 // DELETE /products/:product_id - Delete a product by ID
-app.delete('/products/:product_id', (req, res) => {
+app.delete('/products/:product_id', async (req, res) => {
     const product_id = req.params.product_id;
-    products = products.filter(product => product.product_id !== product_id);
-    res.status(204).send();
+
+    try {
+        const product = await Product.findByPk(product_id);
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        await product.destroy();
+        res.status(204).send();
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' });
+    }
 });
 
 // Root route
